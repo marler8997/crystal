@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+#
+# A tool for installing crystal and the linux kernel to an image
+#
+import os
+import sys
+import argparse
+
+CRYSTAL_RESERVE_SECTOR_COUNT = 16
+CRYSTAL_RESERVE_SIZE = CRYSTAL_RESERVE_SECTOR_COUNT * 512
+
+MBR_OFFSET_PART_TABLE = 446
+MBR_OFFSET_SIGNATURE  = 510
+MBR_PART_TABLE_SIZE = MBR_OFFSET_SIGNATURE - MBR_OFFSET_PART_TABLE
+
+def usage():
+    print("""Usage: crystal-img <command> <args>
+
+Installs crystal and/or the linux kernel into the given disk image. The disk
+image should be a raw MBR partitioned image. It should have a fixed size at the
+start of the disk for crystal and the kernel.
+
+Commands:
+  install-crystal <image> <crystal>
+  install-kernel <image> <kernel-reserve-size> <kernel>
+""")
+
+if len(sys.argv) <= 1:
+    usage()
+    sys.exit(1)
+
+'''
+def get_nearest_sector_aligned_size(size):
+    lower_bits = size & 0x1FF
+    masked = size & ~lower_bits
+    #print("[DEBUG] size = 0x%x, lower = 0x%x, masked = 0x%x" % (size, lower_bits, masked))
+    if lower_bits != 0:
+        masked += 0x200
+    return masked
+'''
+def parse_size(size_string):
+    index = 0
+    while index < len(size_string):
+        c = size_string[index]
+        if not c.isdigit():
+            break
+        index += 1
+
+    num_string = size_string[:index]
+    unit = size_string[index:]
+    if unit == "":
+        return int(num_string)
+    if unit == "M":
+        return int(num_string) * 1024 * 1024
+    else:
+        sys.exit("Error: size '%s' has an uknown unit '%s'" % (size_string, unit))
+
+def install_crystal(args):
+    if len(args) != 2:
+        sys.exit("Error: install-crystal requires 2 arguments: <image> <crystal>")
+    image_file = args[0]
+    crystal_file = args[1]
+    if not os.path.exists(image_file):
+        sys.exit("Error: image '%s' does not exist" % image_file)
+    if not os.path.exists(crystal_file):
+        sys.exit("Error: crystal binary '%s' does not exist" % crystal_file)
+
+    # check the file size before reading it
+    crystal_size = os.path.getsize(crystal_file)
+    if crystal_size >= CRYSTAL_RESERVE_SIZE:
+        sys.exit("Error: crystal binary '%s' is too large, size is %s but max is %s" % (
+            crystal_file, crystal_size, CRYSTAL_RESERVE_SIZE))
+    with open(crystal_file, "rb") as file:
+        crystal_bin = file.read()
+    if len(crystal_bin) != crystal_size:
+        sys.exit("Error: thought size of crystal was %s but is %s" % (crystal_size, len(crystal_bin)))
+
+    print("Installing crystal (%s bytes)" % crystal_size)
+    with open(image_file, "r+b") as file:
+        print("Writing crystal bootstap code (%s bytes)..." % MBR_OFFSET_PART_TABLE)
+        file.seek(0)
+        file.write(crystal_bin[0:MBR_OFFSET_PART_TABLE])
+        print("Writing crystal second stage (%s bytes)..." % (len(crystal_bin) - MBR_OFFSET_SIGNATURE))
+        file.seek(MBR_OFFSET_SIGNATURE)
+        file.write(crystal_bin[MBR_OFFSET_SIGNATURE:])
+
+def install_kernel(args):
+    if len(args) != 3:
+        sys.exit("Error: install-kernel requires 3 arguments: <image> <kernel-reserve-size> <kernel>")
+    image_file = args[0]
+    kernel_reserve_size = parse_size(args[1])
+    kernel_file = args[2]
+    if not os.path.exists(image_file):
+        sys.exit("Error: image '%s' does not exist" % image_file)
+    if not os.path.exists(kernel_file):
+        sys.exit("Error: kernel image '%s' does not exist" % kernel_file)
+
+    kernel_size = os.path.getsize(kernel_file)
+    if kernel_size >= kernel_reserve_size:
+        sys.exit("Error: kernel image '%s' is too large, size is %s but reserve size is %s" % (
+            kernel_file, kernel_size, kernel_reserve_size))
+
+    with open(kernel_file, "rb") as read_file:
+        with open(image_file, "r+b") as write_file:
+            print("Installing kernel (%s bytes)" % kernel_size)
+            write_file.seek(CRYSTAL_RESERVE_SIZE)
+            write_file.write(read_file.read())
+
+
+command = sys.argv[1]
+args = sys.argv[2:]
+if command == "install-crystal":
+    install_crystal(args)
+elif command == "install-kernel":
+    install_kernel(args)
+else:
+    sys.exit("Error: unknown command '%s'" % command)
